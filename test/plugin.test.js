@@ -4,7 +4,7 @@
  * Run with: npm test
  */
 
-const { zulipPlugin, zulipApi } = require('../src/plugin');
+const { zulipPlugin, zulipApi } = require('../plugin');
 
 // ============================================
 // UNIT TESTS - Pure functions, no network

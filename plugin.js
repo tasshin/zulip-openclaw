@@ -109,6 +109,14 @@ function loadPersonaContent(config, personaId) {
 
 // --- API Client ---
 
+class RateLimitError extends Error {
+  constructor(retryAfterSecs) {
+    super(`Rate limited, retry after ${retryAfterSecs}s`);
+    this.name = 'RateLimitError';
+    this.retryAfterMs = retryAfterSecs * 1000;
+  }
+}
+
 async function zulipApi(creds, endpoint, method = 'GET', data, opts = {}) {
   const url = new URL(`/api/v1${endpoint}`, creds.site);
   const auth = Buffer.from(`${creds.email}:${creds.apiKey}`).toString('base64');
@@ -126,6 +134,12 @@ async function zulipApi(creds, endpoint, method = 'GET', data, opts = {}) {
   }
 
   const response = await fetch(url.toString(), fetchOpts);
+
+  if (response.status === 429) {
+    const retryAfter = parseInt(response.headers.get('retry-after') || '60', 10);
+    throw new RateLimitError(retryAfter);
+  }
+
   return response.json();
 }
 
@@ -375,6 +389,28 @@ const zulipPlugin = {
 
       // Poll loop with 90s timeout (Zulip long-poll typically returns within 60s)
       const POLL_TIMEOUT_MS = 90_000;
+      let consecutiveErrors = 0;
+
+      const backoff = (errors) => {
+        // Exponential backoff: 5s, 10s, 20s, 40s, capped at 60s
+        const ms = Math.min(5000 * Math.pow(2, errors - 1), 60_000);
+        ctx.log?.info?.(`[zulip] Backing off for ${ms / 1000}s`);
+        return new Promise(r => setTimeout(r, ms));
+      };
+
+      const reRegister = async () => {
+        const reReg = await zulipApi(creds, '/register', 'POST', {
+          event_types: JSON.stringify(['message', 'reaction']),
+        });
+        if (reReg.result === 'success') {
+          queueId = reReg.queue_id;
+          lastEventId = reReg.last_event_id;
+          ctx.log?.info?.('[zulip] Re-registered event queue');
+          return true;
+        }
+        ctx.log?.error?.(`[zulip] Re-registration failed: ${reReg.msg}`);
+        return false;
+      };
 
       const poll = async () => {
         while (!ctx.abortSignal?.aborted) {
@@ -383,22 +419,20 @@ const zulipPlugin = {
             const result = await zulipApi(creds, `/events?${qs}`, 'GET', undefined, { timeoutMs: POLL_TIMEOUT_MS });
 
             if (result.result !== 'success') {
+              consecutiveErrors++;
               if (String(result.msg).includes('BAD_EVENT_QUEUE_ID')) {
                 ctx.log?.warn?.('[zulip] Queue expired, re-registering...');
-                const reReg = await zulipApi(creds, '/register', 'POST', {
-                  event_types: JSON.stringify(['message', 'reaction']),
-                });
-                if (reReg.result === 'success') {
-                  queueId = reReg.queue_id;
-                  lastEventId = reReg.last_event_id;
-                  ctx.log?.info?.('[zulip] Re-registered event queue');
+                if (!await reRegister()) {
+                  await backoff(consecutiveErrors);
                 }
               } else {
                 ctx.log?.error?.(`[zulip] Poll failed: ${result.msg}`);
-                await new Promise(r => setTimeout(r, 5000));
+                await backoff(consecutiveErrors);
               }
               continue;
             }
+
+            consecutiveErrors = 0;
 
             for (const event of result.events) {
               lastEventId = event.id;
@@ -452,7 +486,12 @@ const zulipPlugin = {
                     threadStarterBody = `${label}:\n${formatted}`;
                   }
                 } catch (err) {
-                  ctx.log?.warn?.(`[zulip] Failed to fetch context: ${err.message}`);
+                  if (err instanceof RateLimitError) {
+                    ctx.log?.warn?.(`[zulip] Rate limited fetching context, waiting ${err.retryAfterMs / 1000}s`);
+                    await new Promise(r => setTimeout(r, err.retryAfterMs));
+                  } else {
+                    ctx.log?.warn?.(`[zulip] Failed to fetch context: ${err.message}`);
+                  }
                 }
 
                 // Resolve persona for this message (if config exists)
@@ -549,7 +588,12 @@ const zulipPlugin = {
                     },
                   });
                 } catch (dispatchErr) {
-                  ctx.log?.error?.(`[zulip] Failed to dispatch message: ${dispatchErr.message}`);
+                  if (dispatchErr instanceof RateLimitError) {
+                    ctx.log?.warn?.(`[zulip] Rate limited during dispatch, waiting ${dispatchErr.retryAfterMs / 1000}s`);
+                    await new Promise(r => setTimeout(r, dispatchErr.retryAfterMs));
+                  } else {
+                    ctx.log?.error?.(`[zulip] Failed to dispatch message: ${dispatchErr.message}`);
+                  }
                 }
               }
             }
@@ -558,8 +602,14 @@ const zulipPlugin = {
               // Normal — long-poll timed out with no events, just retry
               continue;
             }
+            if (err instanceof RateLimitError) {
+              ctx.log?.warn?.(`[zulip] Rate limited, waiting ${err.retryAfterMs / 1000}s`);
+              await new Promise(r => setTimeout(r, err.retryAfterMs));
+              continue;
+            }
+            consecutiveErrors++;
             ctx.log?.error?.(`[zulip] Poll error: ${err.message}`);
-            await new Promise(r => setTimeout(r, 5000));
+            await backoff(consecutiveErrors);
           }
         }
       };
@@ -585,4 +635,4 @@ const zulipPlugin = {
 
 // --- Export & Registration ---
 
-module.exports = { zulipPlugin, zulipApi, loadCredentials, setPluginRuntime };
+module.exports = { zulipPlugin, zulipApi, loadCredentials, setPluginRuntime, RateLimitError };
