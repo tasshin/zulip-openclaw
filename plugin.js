@@ -9,6 +9,9 @@ const { readFileSync, existsSync } = require('fs');
 const { join } = require('path');
 const { homedir } = require('os');
 
+const { version } = require('./package.json');
+const USER_AGENT = `zulip-openclaw/${version}`;
+
 // --- Plugin Runtime (set during registration) ---
 
 let pluginRuntime = null;
@@ -120,7 +123,7 @@ class RateLimitError extends Error {
 async function zulipApi(creds, endpoint, method = 'GET', data, opts = {}) {
   const url = new URL(`/api/v1${endpoint}`, creds.site);
   const auth = Buffer.from(`${creds.email}:${creds.apiKey}`).toString('base64');
-  const headers = { 'Authorization': `Basic ${auth}` };
+  const headers = { 'Authorization': `Basic ${auth}`, 'User-Agent': USER_AGENT };
 
   let body;
   if (data && (method === 'POST' || method === 'PATCH' || method === 'DELETE')) {
