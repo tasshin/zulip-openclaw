@@ -394,6 +394,21 @@ const zulipPlugin = {
       const POLL_TIMEOUT_MS = 90_000;
       let consecutiveErrors = 0;
 
+      // Lightweight observability for Zulip support/rate-limit verification
+      let eventsPollCount = 0;
+      let events429Count = 0;
+      let eventsWindowStartMs = Date.now();
+      const maybeLogEventsPollStats = () => {
+        const now = Date.now();
+        if (now - eventsWindowStartMs < 60_000) return;
+        ctx.log?.info?.(
+          `[zulip] /events poll stats: req_per_min=${eventsPollCount}, rate_limit_429=${events429Count}, consecutive_errors=${consecutiveErrors}`,
+        );
+        eventsPollCount = 0;
+        events429Count = 0;
+        eventsWindowStartMs = now;
+      };
+
       const backoff = (errors) => {
         // Exponential backoff: 5s, 10s, 20s, 40s, capped at 60s
         const ms = Math.min(5000 * Math.pow(2, errors - 1), 60_000);
@@ -419,7 +434,9 @@ const zulipPlugin = {
         while (!ctx.abortSignal?.aborted) {
           try {
             const qs = `queue_id=${encodeURIComponent(queueId)}&last_event_id=${lastEventId}`;
+            eventsPollCount++;
             const result = await zulipApi(creds, `/events?${qs}`, 'GET', undefined, { timeoutMs: POLL_TIMEOUT_MS });
+            maybeLogEventsPollStats();
 
             if (result.result !== 'success') {
               consecutiveErrors++;
@@ -606,6 +623,8 @@ const zulipPlugin = {
               continue;
             }
             if (err instanceof RateLimitError) {
+              events429Count++;
+              maybeLogEventsPollStats();
               ctx.log?.warn?.(`[zulip] Rate limited, waiting ${err.retryAfterMs / 1000}s`);
               await new Promise(r => setTimeout(r, err.retryAfterMs));
               continue;
