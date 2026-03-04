@@ -617,7 +617,7 @@ const zulipPlugin = {
         }
       };
 
-      poll();
+      return poll();
     },
   },
 
