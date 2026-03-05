@@ -140,7 +140,12 @@ async function zulipApi(creds, endpoint, method = 'GET', data, opts = {}) {
 
   if (response.status === 429) {
     const retryAfter = parseInt(response.headers.get('retry-after') || '60', 10);
+    console.warn(`[zulip] 429 rate limited on ${endpoint}, retry-after=${retryAfter}s`);
     throw new RateLimitError(retryAfter);
+  }
+
+  if (!response.ok) {
+    console.warn(`[zulip] HTTP ${response.status} on ${endpoint}`);
   }
 
   return response.json();
