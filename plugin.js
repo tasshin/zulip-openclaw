@@ -398,11 +398,12 @@ const zulipPlugin = {
       // Poll loop with 90s timeout (Zulip long-poll typically returns within 60s)
       const POLL_TIMEOUT_MS = 90_000;
       let consecutiveErrors = 0;
+      const MAX_CONSECUTIVE_ERRORS = 20; // Give up after sustained failures
 
       const backoff = (errors) => {
-        // Exponential backoff: 5s, 10s, 20s, 40s, capped at 60s
-        const ms = Math.min(5000 * Math.pow(2, errors - 1), 60_000);
-        ctx.log?.info?.(`[zulip] Backing off for ${ms / 1000}s`);
+        // Exponential backoff: 5s, 10s, 20s, 40s, capped at 120s
+        const ms = Math.min(5000 * Math.pow(2, errors - 1), 120_000);
+        ctx.log?.info?.(`[zulip] Backing off for ${ms / 1000}s (error ${errors}/${MAX_CONSECUTIVE_ERRORS})`);
         return new Promise(r => setTimeout(r, ms));
       };
 
@@ -422,6 +423,11 @@ const zulipPlugin = {
 
       const poll = async () => {
         while (!ctx.abortSignal?.aborted) {
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            ctx.log?.error?.(`[zulip] Too many consecutive errors (${consecutiveErrors}), stopping poller. Fix the issue and restart the gateway.`);
+            return;
+          }
+
           try {
             const qs = `queue_id=${encodeURIComponent(queueId)}&last_event_id=${lastEventId}`;
             const result = await zulipApi(creds, `/events?${qs}`, 'GET', undefined, { timeoutMs: POLL_TIMEOUT_MS });
@@ -440,6 +446,10 @@ const zulipPlugin = {
               continue;
             }
 
+            // Only reset after a genuinely useful response (not just any 200)
+            if (consecutiveErrors > 0) {
+              ctx.log?.info?.(`[zulip] Poll recovered after ${consecutiveErrors} errors`);
+            }
             consecutiveErrors = 0;
 
             for (const event of result.events) {
@@ -613,6 +623,7 @@ const zulipPlugin = {
             if (err instanceof RateLimitError) {
               ctx.log?.warn?.(`[zulip] Rate limited, waiting ${err.retryAfterMs / 1000}s`);
               await new Promise(r => setTimeout(r, err.retryAfterMs));
+              consecutiveErrors++;
               continue;
             }
             consecutiveErrors++;
