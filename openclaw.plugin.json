@@ -2,7 +2,7 @@
   "id": "zulip-openclaw",
   "name": "Zulip",
   "description": "Zulip messaging channel for OpenClaw — bidirectional, topic-aware, with persona routing",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "channels": ["zulip"],
   "entry": "index.js",
   "configSchema": {
