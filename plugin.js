@@ -631,9 +631,11 @@ const zulipPlugin = {
             await backoff(consecutiveErrors);
           }
         }
+        ctx.log?.info?.('[zulip] Poll loop exited');
       };
 
-      poll();
+      // Await the poll loop so the gateway knows when it exits
+      await poll();
     },
   },
 
