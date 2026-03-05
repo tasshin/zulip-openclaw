@@ -429,7 +429,7 @@ const zulipPlugin = {
           }
 
           try {
-            const qs = `queue_id=${encodeURIComponent(queueId)}&last_event_id=${lastEventId}`;
+            const qs = `queue_id=${encodeURIComponent(queueId)}&last_event_id=${lastEventId}&dont_block=false`;
             const result = await zulipApi(creds, `/events?${qs}`, 'GET', undefined, { timeoutMs: POLL_TIMEOUT_MS });
 
             if (result.result !== 'success') {
@@ -616,7 +616,7 @@ const zulipPlugin = {
               }
             }
           } catch (err) {
-            if (err.name === 'TimeoutError') {
+            if (err.name === 'TimeoutError' || err.name === 'AbortError') {
               // Normal — long-poll timed out with no events, just retry
               continue;
             }
