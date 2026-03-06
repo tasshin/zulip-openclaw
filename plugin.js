@@ -145,7 +145,9 @@ async function zulipApi(creds, endpoint, method = 'GET', data, opts = {}) {
   }
 
   if (!response.ok) {
-    console.warn(`[zulip] HTTP ${response.status} on ${endpoint}`);
+    const body = await response.text();
+    console.warn(`[zulip] HTTP ${response.status} on ${endpoint}: ${body.slice(0, 200)}`);
+    throw new Error(`Zulip API error ${response.status} on ${endpoint}`);
   }
 
   return response.json();
